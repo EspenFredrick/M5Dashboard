@@ -1,7 +1,15 @@
 #include <M5EPD.h>
+#include <WiFi.h>
+#include <TimeLib.h>
+#include <time.h>
 
 M5EPD_Canvas canvas(&M5.EPD);
 M5EPD_Canvas statusBar(&M5.EPD);
+
+// WLAN credentials
+String currentSSID = "Milkyway24";  // Placeholder SSID
+String currentPassword = "Fs*tYp%s37s;?";  // Placeholder password
+bool isWiFiConnected = false;  // Connection status
 
 // Page states
 enum Page {
@@ -25,6 +33,22 @@ const char* labels[] = {
     "Clock", "Weather", "Calendar", "Notes", 
     "Astronomy", "News", "Files", "Settings"
 };
+
+
+bool connectToWiFi(const String& ssid, const String& password) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), password.c_str());
+
+    // Wait up to 10 seconds for connection
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        attempts++;
+    }
+
+    isWiFiConnected = (WiFi.status() == WL_CONNECTED);
+    return isWiFiConnected;
+}
 
 bool squircleFilled[GRID_ROWS * GRID_COLS] = {false};
 struct Square {
@@ -105,8 +129,36 @@ void drawMainMenu() {
 
 void drawCalendar() {
     canvas.fillCanvas(0);
+
+    // Left side - Month and Day
+    canvas.setTextSize(6);
+    canvas.drawString("January", 20, 20);
     canvas.setTextSize(4);
-    canvas.drawString("January", 20, 20);  
+    canvas.drawString("31 Monday", 20, 70);  // Placeholder date
+
+    // Right side - Calendar Grid
+    const int CALENDAR_START_X = 480;  // Start at middle of screen
+    const int CALENDAR_START_Y = 20;
+    const int CELL_WIDTH = 60;
+    const int CELL_HEIGHT = 50;
+    const int HEADER_HEIGHT = 40;
+
+    // Draw day labels
+    canvas.setTextSize(2);
+    const char* days[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+    for (int i = 0; i < 7; i++) {
+        int x = CALENDAR_START_X + (i * CELL_WIDTH);
+        canvas.drawString(days[i], x + 5, CALENDAR_START_Y);
+    }
+
+    // Draw calendar grid
+    for (int row = 0; row < 6; row++) {
+        for (int col = 0; col < 7; col++) {
+            int x = CALENDAR_START_X + (col * CELL_WIDTH);
+            int y = CALENDAR_START_Y + HEADER_HEIGHT + (row * CELL_HEIGHT);
+            canvas.drawRect(x, y, CELL_WIDTH, CELL_HEIGHT, 15);
+        }
+    }
 
     canvas.pushCanvas(0, 50, UPDATE_MODE_DU4);
 }
@@ -149,15 +201,42 @@ void drawWLANPage() {
     canvas.setTextSize(4);
     canvas.drawString("WLAN", 20, 20);
 
+    // Left side - Input fields
     canvas.setTextSize(3);
     canvas.drawString("Network SSID:", 40, 100);
-    canvas.drawRect(40, 140, 880, 50, 15);
+    canvas.drawRect(40, 140, 400, 50, 15);
+    canvas.setTextSize(2);
+    canvas.drawString(currentSSID, 50, 155);  // Display current SSID in field
 
+    canvas.setTextSize(3);
     canvas.drawString("Password:", 40, 220);
-    canvas.drawRect(40, 260, 880, 50, 15);
+    canvas.drawRect(40, 260, 400, 50, 15);
+    canvas.setTextSize(2);
+    canvas.drawString("********", 50, 275);  // Show asterisks for password
 
-    canvas.drawRect(380, 400, 200, 60, 15);
-    canvas.drawString("Submit", 430, 415);
+    // Submit button
+    canvas.drawRect(140, 340, 200, 60, 15);
+    canvas.setTextSize(3);
+    canvas.drawString("Submit", 190, 355);
+
+    // Right side - WLAN Info
+    const int RIGHT_START_X = 520;
+    canvas.setTextSize(4);
+    canvas.drawString("WLAN Info", RIGHT_START_X, 100);
+
+
+    canvas.setTextSize(3);
+    // SSID line
+    canvas.drawString("SSID:", RIGHT_START_X, 180);
+    int ssidLabelWidth = canvas.textWidth("SSID:");
+    canvas.drawString(isWiFiConnected ? currentSSID : "Not Connected", 
+                    RIGHT_START_X + ssidLabelWidth + 20, 180);
+
+    // Status line
+    canvas.drawString("Status:", RIGHT_START_X, 220);
+    int statusLabelWidth = canvas.textWidth("Status:");
+    canvas.drawString(isWiFiConnected ? "Connected" : "Not Connected", 
+                    RIGHT_START_X + statusLabelWidth + 20, 220);
 
     canvas.pushCanvas(0, 50, UPDATE_MODE_DU4);
 }
@@ -256,6 +335,40 @@ void handleTouch() {
                 case SETTINGS:
                     handleSettingsTouch(touchX, touchY);
                     break;
+                
+                case WLAN_SETTINGS:
+                    if (!M5.TP.isFingerUp()) {
+                        tp_finger_t FingerItem = M5.TP.readFinger(0);
+                        int touchX = FingerItem.x;
+                        int touchY = FingerItem.y - 50;
+
+                        // Check SSID field touch
+                        if (touchX >= 40 && touchX <= 440 && touchY >= 140 && touchY <= 190) {
+                            // Here you would implement keyboard input for SSID
+                            // For now, we'll use the placeholder value
+                            currentSSID = "Milkyway24";
+                            drawWLANPage();
+                        }
+                        // Check password field touch
+                        else if (touchX >= 40 && touchX <= 440 && touchY >= 260 && touchY <= 310) {
+                            // Here you would implement keyboard input for password
+                            // For now, we'll use the placeholder value
+                            currentPassword = "Fs*tYp%s37s;?";
+                            drawWLANPage();
+                        }
+                        // Check submit button touch
+                        else if (touchX >= 140 && touchX <= 340 && touchY >= 340 && touchY <= 400) {
+                            // Try to connect to WiFi
+                            if (connectToWiFi(currentSSID, currentPassword)) {
+                                isWiFiConnected = true;
+                            } else {
+                                isWiFiConnected = false;
+                            }
+                            drawWLANPage();
+                        }
+                    }
+                    break;
+
             }
         }
     }
@@ -269,6 +382,25 @@ void loop() {
         delay(500);
     }
 
+    // Check WiFi status every 5 seconds
+    static unsigned long lastWiFiCheck = 0;
+    if (millis() - lastWiFiCheck >= 5000) {
+        checkWiFiStatus();
+        if (currentPage == WLAN_SETTINGS) {
+            drawWLANPage();  // Update the display if we're on the WLAN page
+        }
+        lastWiFiCheck = millis();
+    }
+
     handleTouch();
     delay(10);
 }
+
+void checkWiFiStatus() {
+    if (WiFi.status() != WL_CONNECTED) {
+        isWiFiConnected = false;
+    } else {
+        isWiFiConnected = true;
+    }
+}
+
