@@ -34,21 +34,17 @@ const char* labels[] = {
     "Astronomy", "News", "Files", "Settings"
 };
 
+// Time sync settings
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = -21600;  // CST: -6 hours * 3600 seconds/hour
+const int daylightOffset_sec = 3600; // 1 hour for daylight savings
 
-bool connectToWiFi(const String& ssid, const String& password) {
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid.c_str(), password.c_str());
+// Power management constants
+const int LOW_BATTERY_THRESHOLD = 15;  // 15% battery threshold
+const unsigned long INACTIVITY_TIMEOUT = 5 * 60 * 1000;  // 5 minutes in milliseconds
+unsigned long lastActivityTime = 0;
+bool isLowPowerMode = false;
 
-    // Wait up to 10 seconds for connection
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-        delay(500);
-        attempts++;
-    }
-
-    isWiFiConnected = (WiFi.status() == WL_CONNECTED);
-    return isWiFiConnected;
-}
 
 bool squircleFilled[GRID_ROWS * GRID_COLS] = {false};
 struct Square {
@@ -57,8 +53,8 @@ struct Square {
 } squares[GRID_ROWS * GRID_COLS];
 
 // Settings menu items
-const char* settingsItems[] = {"WLAN", "Time and Date", "Misc"};
-const int SETTINGS_ITEMS_COUNT = 3;
+const char* settingsItems[] = {"WLAN", "Time and Date", "Power", "Misc"};
+const int SETTINGS_ITEMS_COUNT = 4;
 int selectedSettingItem = -1;
 
 // Notes items
@@ -86,14 +82,56 @@ void setup() {
     statusBar.createCanvas(960, 40);
     canvas.setTextSize(3);
     statusBar.setTextSize(2);
+
+    // Check wake up reason
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 || wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
+        // Woke up from sleep, check battery
+        if (getBatteryPercentage() <= LOW_BATTERY_THRESHOLD) {
+            goToSleep();  // Go back to sleep if still low battery
+        }
+    }
+
+    lastActivityTime = millis();  // Initialize activity timer
     drawScreen();
 }
 
 void drawStatusBar() {
     statusBar.fillCanvas(0);
-    statusBar.drawString("12:00 PM", 10, 10);
-    statusBar.drawString("BATTERY", 860, 10);
-    statusBar.drawString("SSID:", 750, 10);
+
+    // Time display
+    if (isWiFiConnected) {
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo)) {
+            char timeStr[12];
+            int hour12 = timeinfo.tm_hour % 12;
+            if (hour12 == 0) hour12 = 12;
+            sprintf(timeStr, "%d:%02d %s", 
+                    hour12,
+                    timeinfo.tm_min,
+                    timeinfo.tm_hour >= 12 ? "PM" : "AM");
+            statusBar.drawString(timeStr, 10, 10);
+        } else {
+            statusBar.drawString("--:-- --", 10, 10);
+        }
+    } else {
+        statusBar.drawString("--:-- --", 10, 10);
+    }
+
+    // SSID display (moved left to make room for battery)
+    if (isWiFiConnected) {
+        statusBar.drawString(currentSSID, 650, 10);
+    } else {
+        statusBar.drawString("Not Connected", 650, 10);
+    }
+
+    // Battery status (moved all the way right)
+    char batteryStr[8];
+    sprintf(batteryStr, "%d%%", getBatteryPercentage());
+    // Calculate position to right-align the text
+    int batteryWidth = statusBar.textWidth(batteryStr);
+    statusBar.drawString(batteryStr, 960 - batteryWidth - 10, 10);  // 10px padding from right edge
+
     statusBar.pushCanvas(0, 0, UPDATE_MODE_DU4);
 }
 
@@ -285,6 +323,7 @@ void handleSettingsTouch(int touchX, int touchY) {
 
 void handleTouch() {
     if (M5.TP.available()) {
+        lastActivityTime = millis();  // Reset inactivity timer on any touch
         M5.TP.update();
 
         if(M5.TP.getFingerNum() == 2) {
@@ -374,26 +413,18 @@ void handleTouch() {
     }
 }
 
-void loop() {
-    M5.update();
-    if (M5.BtnP.wasPressed()) {
-        M5.EPD.Clear(true);
-        drawScreen();
-        delay(500);
-    }
+int getBatteryPercentage() {
+    float voltage = M5.getBatteryVoltage();
+    float percentage = (voltage - 3200) / (4200 - 3200) * 100;
+    if (percentage > 100) percentage = 100;
+    if (percentage < 0) percentage = 0;
+    return (int)percentage;
+}
 
-    // Check WiFi status every 5 seconds
-    static unsigned long lastWiFiCheck = 0;
-    if (millis() - lastWiFiCheck >= 5000) {
-        checkWiFiStatus();
-        if (currentPage == WLAN_SETTINGS) {
-            drawWLANPage();  // Update the display if we're on the WLAN page
-        }
-        lastWiFiCheck = millis();
+void syncTimeFromNTP() {
+    if (isWiFiConnected) {
+        configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
     }
-
-    handleTouch();
-    delay(10);
 }
 
 void checkWiFiStatus() {
@@ -404,3 +435,111 @@ void checkWiFiStatus() {
     }
 }
 
+void goToSleep() {
+    canvas.fillCanvas(0);
+    canvas.setTextSize(3);
+    if (getBatteryPercentage() <= LOW_BATTERY_THRESHOLD) {
+        canvas.drawString("Low Battery! Going to sleep... :(", 240, 250);
+    } else {
+        canvas.drawString("Shhh... I'm sleeping.", 240, 250);
+    }
+    canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);
+    delay(2000);  // Show message for 2 seconds
+
+    // Disconnect WiFi to save power
+    if (isWiFiConnected) {
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+    }
+
+    // Configure wake up sources
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_38, 0);  // Wake on touch
+    esp_sleep_enable_ext1_wakeup(GPIO_SEL_37, ESP_EXT1_WAKEUP_ANY_HIGH);  // Wake on power button
+
+    // Go to sleep
+    esp_deep_sleep_start();
+}
+
+bool connectToWiFi(const String& ssid, const String& password) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), password.c_str());
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        attempts++;
+    }
+
+    isWiFiConnected = (WiFi.status() == WL_CONNECTED);
+
+    if (isWiFiConnected) {
+        syncTimeFromNTP();  // Sync time after successful connection
+        delay(1000);  // Give time for initial time sync
+        drawStatusBar();  // Update status bar immediately
+    }
+
+    return isWiFiConnected;
+}
+
+void loop() {
+    M5.update();
+    static int lastMinute = -1;
+    static int lastBatteryCheck = -1;
+    static unsigned long lastBatteryCheckTime = 0;
+
+    // Check for low battery or inactivity
+    if (!isLowPowerMode) {  // Only check if not already in low power mode
+        int currentBattery = getBatteryPercentage();
+        if (currentBattery <= LOW_BATTERY_THRESHOLD) {
+            goToSleep();
+        }
+
+        // Check for inactivity
+        if (millis() - lastActivityTime >= INACTIVITY_TIMEOUT) {
+            goToSleep();
+        }
+    }
+
+    // Reset activity timer if button is pressed
+    if (M5.BtnP.wasPressed()) {
+        lastActivityTime = millis();
+        M5.EPD.Clear(true);
+        drawScreen();
+        delay(500);
+    }
+
+    // Your existing WiFi and time checks...
+    static unsigned long lastWiFiCheck = 0;
+    if (millis() - lastWiFiCheck >= 5000) {
+        checkWiFiStatus();
+        if (currentPage == WLAN_SETTINGS) {
+            drawWLANPage();
+        }
+        lastWiFiCheck = millis();
+    }
+
+    // Update time display when minute changes
+    if (isWiFiConnected) {
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo)) {
+            if (timeinfo.tm_min != lastMinute) {
+                drawStatusBar();
+                lastMinute = timeinfo.tm_min;
+                lastActivityTime = millis();  // Reset inactivity timer on time update
+            }
+        }
+    }
+
+    // Check battery every 60 seconds
+    if (millis() - lastBatteryCheckTime >= 60000) {
+        int currentBatteryLevel = getBatteryPercentage();
+        if (currentBatteryLevel != lastBatteryCheck) {
+            drawStatusBar();
+            lastBatteryCheck = currentBatteryLevel;
+        }
+        lastBatteryCheckTime = millis();
+    }
+
+    handleTouch();
+    delay(10);
+}
