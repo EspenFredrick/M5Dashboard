@@ -5,6 +5,7 @@
 #include <TimeLib.h>
 #include <time.h>
 
+
 // Forward declarations of all global variables
 extern M5EPD_Canvas canvas;
 extern M5EPD_Canvas statusBar;

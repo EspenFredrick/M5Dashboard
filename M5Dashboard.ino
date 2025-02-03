@@ -3,7 +3,11 @@
 #include "network.h"
 #include "ui.h"
 #include "touch.h"
-#include "statusbar.h"  
+#include "statusbar.h"
+
+#include <NimBLEDevice.h>
+#include <NimBLEHIDDevice.h>
+NimBLEHIDDevice* hidDevice;
 
 void setup() {
     M5.begin(true, false, true, true, false);
@@ -70,6 +74,12 @@ void setup() {
 
     drawScreen();
 
+
+    NimBLEDevice::init("M5Paper");
+    NimBLEDevice::setSecurityAuth(true, true, true);
+    hidDevice = NimBLEDevice::createHIDDevice();
+    NimBLEDevice::start();
+    Serial.println("Bluetooth HID Host initialized. Waiting for keyboard connection...");
 }
 
 void loop() {
